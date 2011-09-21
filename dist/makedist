@@ -1,0 +1,183 @@
+#!/usr/bin/env python
+# -*- Mode:Python; indent-tabs-mode:nil; tab-width:4 -*-
+#
+# Copyright 2002 Ben Escoto <ben@emerose.org>
+# Copyright 2007 Kenneth Loafman <kenneth@loafman.com>
+#
+# This file is part of duplicity.
+#
+# Duplicity is free software; you can redistribute it and/or modify it
+# under the terms of the GNU General Public License as published by the
+# Free Software Foundation; either version 2 of the License, or (at your
+# option) any later version.
+#
+# Duplicity is distributed in the hope that it will be useful, but
+# WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+# General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with duplicity; if not, write to the Free Software Foundation,
+# Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
+
+import os, re, shutil, time, sys
+
+SourceDir = "duplicity"
+DistDir = "dist"
+
+# Various details about the files must also be specified by the rpm
+# spec template.
+spec_template = "dist/duplicity.spec.template"
+
+def VersionedCopy(source, dest):
+    """
+    Copy source to dest, substituting $version with version
+    $reldate with today's date, i.e. December 28, 2008.
+    """
+    fin = open(source, "rb")
+    inbuf = fin.read()
+    assert not fin.close()
+
+    (outbuf, cnt) = re.subn("\$version", Version, inbuf)
+    assert cnt != 0, "No $version string replaced in" + source
+
+    inbuf = outbuf
+    (outbuf, cnt) = re.subn("\$reldate", Reldate, inbuf)
+
+    fout = open(dest, "wb")
+    fout.write(outbuf)
+    assert not fout.close()
+
+def MakeTar():
+    """Create duplicity tar file"""
+    tardir = "duplicity-%s" % Version
+    tarfile = "duplicity-%s.tar.gz" % Version
+    try:
+        os.lstat(tardir)
+        os.system("rm -rf " + tardir)
+    except OSError: pass
+
+    os.mkdir(tardir)
+    for filename in [
+        "CHANGELOG",
+        "Changelog.GNU",
+        "COPYING",
+        "REPO-README",
+        "LOG-README",
+        "README",
+        "tarfile-LICENSE",
+        SourceDir + "/_librsyncmodule.c",
+        DistDir + "/setup.py",
+        ]:
+        assert not os.system("cp %s %s" % (filename, tardir)), filename
+
+    os.mkdir(os.path.join(tardir, "src"))
+    for filename in [
+        "asyncscheduler.py",
+        "backend.py",
+        "collections.py",
+        "commandline.py",
+        "diffdir.py",
+        "dup_temp.py",
+        "dup_threading.py",
+        "dup_time.py",
+        "errors.py",
+        "file_naming.py",
+        "globals.py",
+        "GnuPGInterface.py",
+        "gpg.py",
+        "__init__.py",
+        "lazy.py",
+        "librsync.py",
+        "log.py",
+        "manifest.py",
+        "misc.py",
+        "patchdir.py",
+        "path.py",
+        "pexpect.py",
+        "robust.py",
+        "selection.py",
+        "static.py",
+        "statistics.py",
+        "tarfile.py",
+        "tempdir.py",
+        "urlparse_2_5.py",
+        "util.py",
+        ]:
+        assert not os.system("cp %s/%s %s/src" % (SourceDir, filename, tardir)), filename
+
+    os.mkdir(os.path.join(tardir, "src", "backends"))
+    for filename in [
+        "backends/botobackend.py",
+        "backends/cloudfilesbackend.py",
+        "backends/ftpbackend.py",
+        "backends/ftpsbackend.py",
+        "backends/giobackend.py",
+        "backends/hsibackend.py",
+        "backends/imapbackend.py",
+        "backends/__init__.py",
+        "backends/localbackend.py",
+        "backends/rsyncbackend.py",
+        "backends/sshbackend.py",
+        "backends/tahoebackend.py",
+        "backends/u1backend.py",
+        "backends/webdavbackend.py",
+        "backends/gdocsbackend.py",
+        ]:
+        assert not os.system("cp %s/%s %s/src/backends" %
+                             (SourceDir, filename, tardir)), filename
+
+    os.mkdir(os.path.join(tardir, "po"))
+    assert not os.system("cd po && ./update-pot")
+    for filename in [
+        "duplicity.pot",
+        ]:
+        assert not os.system("cp po/%s %s/po" % (filename, tardir)), filename
+    linguas = open('po/LINGUAS')
+    for line in linguas:
+        langs = line.split()
+        for lang in langs:
+            assert not os.mkdir(os.path.join(tardir, "po", lang)), lang
+            assert not os.system("cp po/%s.po %s/po/%s" % (lang, tardir, lang)), lang
+            assert not os.system("msgfmt po/%s.po -o %s/po/%s/duplicity.mo" % (lang, tardir, lang)), lang
+    linguas.close()
+
+    VersionedCopy(os.path.join(SourceDir, "globals.py"),
+                  os.path.join(tardir, "src", "globals.py"))
+    VersionedCopy("duplicity-bin",
+                  os.path.join(tardir, "duplicity"))
+    VersionedCopy("rdiffdir",
+                  os.path.join(tardir, "rdiffdir"))
+    VersionedCopy("duplicity.1",
+                  os.path.join(tardir, "duplicity.1"))
+    VersionedCopy("rdiffdir.1",
+                  os.path.join(tardir, "rdiffdir.1"))
+    VersionedCopy(os.path.join(DistDir, "setup.py"),
+                  os.path.join(tardir, "setup.py"))
+
+    os.chmod(os.path.join(tardir, "setup.py"), 0755)
+    os.chmod(os.path.join(tardir, "rdiffdir"), 0644)
+    os.system("tar -czf %s %s" % (tarfile, tardir))
+    shutil.rmtree(tardir)
+    return tarfile
+
+def MakeSpecFile():
+    """Create spec file using spec template"""
+    specfile = "duplicity.spec"
+    VersionedCopy(spec_template, specfile)
+    return specfile
+
+def Main():
+    print "Processing version " + Version
+    tarfile = MakeTar()
+    print "Made tar file " + tarfile
+    specfile = MakeSpecFile()
+    print "Made specfile " + specfile
+
+if __name__ == "__main__" and not globals().has_key('__no_execute__'):
+    if len(sys.argv) != 2:
+        print "Syntax: makedist [version_number]"
+        sys.exit(1)
+    Version = sys.argv[1]
+    Reldate = time.strftime("%B %d, %Y", time.localtime())
+    Main()
