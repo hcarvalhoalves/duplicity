@@ -19,7 +19,14 @@
 # along with duplicity; if not, write to the Free Software Foundation,
 # Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
 
+import os
 import time
+import threading
+
+try:
+    from cStringIO import cStringIO as StringIO
+except ImportError:
+    from StringIO import StringIO
 
 import duplicity.backend
 from duplicity import globals
@@ -27,6 +34,7 @@ from duplicity import log
 from duplicity.errors import * #@UnusedWildImport
 from duplicity.util import exception_traceback
 from duplicity.backend import retry
+
 
 class BotoBackend(duplicity.backend.Backend):
     """
@@ -44,7 +52,8 @@ class BotoBackend(duplicity.backend.Backend):
         duplicity.backend.Backend.__init__(self, parsed_url)
 
         from boto.s3.key import Key
-
+        from boto.s3.multipart import MultiPartUpload
+        
         # This folds the null prefix and all null parts, which means that:
         #  //MyBucket/ and //MyBucket are equivalent.
         #  //MyBucket//My///My/Prefix/ and //MyBucket/My/Prefix are equivalent.
@@ -76,7 +85,6 @@ class BotoBackend(duplicity.backend.Backend):
 
         try:
             from boto.s3.connection import S3Connection
-            from boto.s3.key import Key
             assert hasattr(S3Connection, 'lookup')
 
             # Newer versions of boto default to using
@@ -191,8 +199,7 @@ class BotoBackend(duplicity.backend.Backend):
 
         if not remote_filename:
             remote_filename = source_path.get_filename()
-        key = self.key_class(self.bucket)
-        key.key = self.key_prefix + remote_filename
+        key = self.key_prefix + remote_filename
         for n in range(1, globals.num_retries+1):
             if n > 1:
                 # sleep before retry (new connection to a **hopeful** new host, so no need to wait so long)
@@ -204,9 +211,11 @@ class BotoBackend(duplicity.backend.Backend):
                 storage_class = 'STANDARD'
             log.Info("Uploading %s/%s to %s Storage" % (self.straight_url, remote_filename, storage_class))
             try:
-                key.set_contents_from_filename(source_path.name, {'Content-Type': 'application/octet-stream',
-                                                                  'x-amz-storage-class': storage_class})
-                key.close()
+                headers = {
+                    'Content-Type': 'application/octet-stream',
+                    'x-amz-storage-class': storage_class
+                }
+                self.multipart_upload(source_path.name, key, headers)
                 self.resetConnection()
                 return
             except Exception, e:
@@ -313,6 +322,59 @@ class BotoBackend(duplicity.backend.Backend):
             else:
                 return {'size': None}
 
+    def multipart_upload(self, filename, key, headers=None):        
+        chunk_size = globals.s3_multipart_chunk_size
+
+        # The minimum chunk size for S3 is of 5MB
+        if chunk_size < globals.s3_multipart_minimum_chunk_size:
+            chunk_size = globals.s3_multipart_minimum_chunk_size
+            log.Warn("Minimum chunk size is %d, but %d specified." % (
+                globals.s3_multipart_minimum_chunk_size, chunk_size))
+
+        # Chunk size can't be bigger than volume size
+        if chunk_size > globals.volsize:
+            raise BackendException("Chunk size of %d is bigger than volume size of %d. Aborting." % (
+                chunk_size, globals.volsize))
+
+        bytes = os.path.getsize(filename)
+        num_chunks = bytes / chunk_size
+        if num_chunks:
+            chunks = [(chunk_size, False)] * num_chunks
+            chunks[-1] = (chunk_size + bytes % chunk_size, True)
+        else:
+            chunks = [(chunk_size, True)]
+
+        log.Debug("Uploading %d chunks (%d bytes)" % (len(chunks), bytes))
+
+        mp = self.bucket.initiate_multipart_upload(key, headers)
+        
+        for (n, (size, remaining)) in enumerate(chunks):
+            params = {
+                'target': multipart_upload_worker,
+                'args': (mp, filename, n, chunk_size),
+                'kwargs': {'remaining': remaining},
+            }
+            worker = threading.Thread(**params)
+            worker.start()
+
+        for worker in threading.enumerate():
+            if worker is not threading.currentThread():
+                worker.join()
+
+        return mp.complete_upload()
+
+
+def multipart_upload_worker(mp, filename, offset, chunk_size, remaining=False):
+    log.Debug("Uploading chunk %d (%d bytes)..." % (offset + 1, chunk_size))
+    with open(filename, 'rb') as fd:
+        fd.seek(chunk_size * offset)
+        if not remaining:
+            chunk = StringIO(fd.read(chunk_size))
+        else:
+            chunk = StringIO(fd.read())
+    mp.upload_part_from_file(chunk, offset + 1)
+    log.Debug("Finished uploading chunk %d (%d bytes)" % (offset + 1, chunk_size))
+
+
 duplicity.backend.register_backend("s3", BotoBackend)
 duplicity.backend.register_backend("s3+http", BotoBackend)
-
