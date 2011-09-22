@@ -23,17 +23,17 @@ import os
 import time
 import threading
 
-try:
-    from cStringIO import cStringIO as StringIO
-except ImportError:
-    from StringIO import StringIO
-
 import duplicity.backend
 from duplicity import globals
 from duplicity import log
 from duplicity.errors import * #@UnusedWildImport
 from duplicity.util import exception_traceback
 from duplicity.backend import retry
+
+try:
+    from cStringIO import cStringIO as StringIO
+except ImportError:
+    from StringIO import StringIO
 
 
 class BotoBackend(duplicity.backend.Backend):
@@ -327,9 +327,9 @@ class BotoBackend(duplicity.backend.Backend):
 
         # The minimum chunk size for S3 is of 5MB
         if chunk_size < globals.s3_multipart_minimum_chunk_size:
-            chunk_size = globals.s3_multipart_minimum_chunk_size
             log.Warn("Minimum chunk size is %d, but %d specified." % (
                 globals.s3_multipart_minimum_chunk_size, chunk_size))
+            chunk_size = globals.s3_multipart_minimum_chunk_size
 
         # Chunk size can't be bigger than volume size
         if chunk_size > globals.volsize:
@@ -342,14 +342,15 @@ class BotoBackend(duplicity.backend.Backend):
             chunks = [(chunk_size, False)] * num_chunks
             chunks[-1] = (chunk_size + bytes % chunk_size, True)
         else:
-            chunks = [(chunk_size, True)]
+            chunks = [(bytes, True)]
 
-        log.Debug("Uploading %d chunks (%d bytes)" % (len(chunks), bytes))
+        log.Debug("Uploading %d bytes in %d chunks" % (bytes, len(chunks)))
 
         mp = self.bucket.initiate_multipart_upload(key, headers)
         
         for (n, (size, remaining)) in enumerate(chunks):
             params = {
+                'name': 'S3 Worker %s' % (n + 1),
                 'target': multipart_upload_worker,
                 'args': (mp, filename, n, chunk_size),
                 'kwargs': {'remaining': remaining},
@@ -363,18 +364,32 @@ class BotoBackend(duplicity.backend.Backend):
 
         return mp.complete_upload()
 
+def multipart_upload_log(uploaded, total):
+    worker_name = threading.currentThread().name
+    log.Debug("%s: Uploaded %s/%s bytes" % (worker_name, uploaded, total))
 
 def multipart_upload_worker(mp, filename, offset, chunk_size, remaining=False):
-    log.Debug("Uploading chunk %d (%d bytes)..." % (offset + 1, chunk_size))
-    with open(filename, 'rb') as fd:
+    """
+    Worker method for uploading a file chunk to S3 using multipart upload.
+    Note that the file chunk is read into memory, so it's important to keep
+    this number reasonably small.
+    """
+    worker_name = threading.currentThread().name
+    log.Debug("%s: Uploading chunk %d" % (worker_name, offset + 1))
+    try:
+        fd = open(filename, 'rb')
         fd.seek(chunk_size * offset)
-        if not remaining:
-            chunk = StringIO(fd.read(chunk_size))
-        else:
-            chunk = StringIO(fd.read())
-    mp.upload_part_from_file(chunk, offset + 1)
-    log.Debug("Finished uploading chunk %d (%d bytes)" % (offset + 1, chunk_size))
-
+        try:
+            if not remaining:
+                chunk = StringIO(fd.read(chunk_size))
+            else:
+                chunk = StringIO(fd.read())
+            mp.upload_part_from_file(chunk, offset + 1, cb=multipart_upload_log)
+        finally:
+            chunk.close()
+    finally:
+        fd.close()
+    log.Debug("%s: Upload of chunk %d complete" % (worker_name, offset + 1))
 
 duplicity.backend.register_backend("s3", BotoBackend)
 duplicity.backend.register_backend("s3+http", BotoBackend)
