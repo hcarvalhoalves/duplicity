@@ -1,6 +1,10 @@
+.DS_Store
+duplicity-*
+duplicity.spec
 duplicity/_librsync.so
 testing/config.py
 testing/*.log
+po/duplicity.pot-e
 Releases
 patch
 *.pyc
