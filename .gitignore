@@ -1,4 +1,6 @@
+duplicity/_librsync.so
 testing/config.py
 testing/*.log
 Releases
 patch
+*.pyc
