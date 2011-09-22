@@ -23,18 +23,14 @@ import os
 import time
 import threading
 
+from filechunkio import FileChunkIO
+
 import duplicity.backend
 from duplicity import globals
 from duplicity import log
 from duplicity.errors import * #@UnusedWildImport
 from duplicity.util import exception_traceback
 from duplicity.backend import retry
-
-try:
-    from cStringIO import cStringIO as StringIO
-except ImportError:
-    from StringIO import StringIO
-
 
 class BotoBackend(duplicity.backend.Backend):
     """
@@ -331,12 +327,14 @@ class BotoBackend(duplicity.backend.Backend):
                 globals.s3_multipart_minimum_chunk_size, chunk_size))
             chunk_size = globals.s3_multipart_minimum_chunk_size
 
+        # Decide in how many chunks to upload
         bytes = os.path.getsize(filename)
         if bytes < chunk_size:
             chunks = 1
         else:
             chunks = bytes / chunk_size
-            chunks += 1 if (bytes % chunk_size) else 0
+            if (bytes % chunk_size):
+                chunks += 1
 
         log.Debug("Uploading %d bytes in %d chunks" % (bytes, chunks))
 
@@ -361,7 +359,7 @@ def multipart_upload_log(uploaded, total):
     worker_name = threading.currentThread().name
     log.Debug("%s: Uploaded %s/%s bytes" % (worker_name, uploaded, total))
 
-def multipart_upload_worker(mp, filename, offset, chunk_size):
+def multipart_upload_worker(mp, filename, offset, bytes):
     """
     Worker method for uploading a file chunk to S3 using multipart upload.
     Note that the file chunk is read into memory, so it's important to keep
@@ -369,16 +367,10 @@ def multipart_upload_worker(mp, filename, offset, chunk_size):
     """
     worker_name = threading.currentThread().name
     log.Debug("%s: Uploading chunk %d" % (worker_name, offset + 1))
-    try:
-        fd = open(filename, 'rb')
-        fd.seek(chunk_size * offset)
-        try:
-            chunk = StringIO(fd.read(chunk_size))
-            mp.upload_part_from_file(chunk, offset + 1, cb=multipart_upload_log)
-        finally:
-            chunk.close()
-    finally:
-        fd.close()
+
+    with FileChunkIO(filename, 'r', offset=offset, bytes=bytes) as fd:
+        mp.upload_part_from_file(fd, offset + 1, cb=multipart_upload_log)
+
     log.Debug("%s: Upload of chunk %d complete" % (worker_name, offset + 1))
 
 duplicity.backend.register_backend("s3", BotoBackend)
