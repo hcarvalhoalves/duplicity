@@ -325,35 +325,28 @@ class BotoBackend(duplicity.backend.Backend):
     def multipart_upload(self, filename, key, headers=None):        
         chunk_size = globals.s3_multipart_chunk_size
 
-        # The minimum chunk size for S3 is of 5MB
+        # Check minimum chunk size for S3
         if chunk_size < globals.s3_multipart_minimum_chunk_size:
             log.Warn("Minimum chunk size is %d, but %d specified." % (
                 globals.s3_multipart_minimum_chunk_size, chunk_size))
             chunk_size = globals.s3_multipart_minimum_chunk_size
 
-        # Chunk size can't be bigger than volume size
-        if chunk_size > globals.volsize:
-            raise BackendException("Chunk size of %d is bigger than volume size of %d. Aborting." % (
-                chunk_size, globals.volsize))
-
         bytes = os.path.getsize(filename)
-        num_chunks = bytes / chunk_size
-        if num_chunks:
-            chunks = [(chunk_size, False)] * num_chunks
-            chunks[-1] = (chunk_size + bytes % chunk_size, True)
+        if bytes < chunk_size:
+            chunks = 1
         else:
-            chunks = [(bytes, True)]
+            chunks = bytes / chunk_size
+            chunks += 1 if (bytes % chunk_size) else 0
 
-        log.Debug("Uploading %d bytes in %d chunks" % (bytes, len(chunks)))
+        log.Debug("Uploading %d bytes in %d chunks" % (bytes, chunks))
 
         mp = self.bucket.initiate_multipart_upload(key, headers)
         
-        for (n, (size, remaining)) in enumerate(chunks):
+        for n in range(0, chunks):
             params = {
                 'name': 'S3 Worker %s' % (n + 1),
                 'target': multipart_upload_worker,
                 'args': (mp, filename, n, chunk_size),
-                'kwargs': {'remaining': remaining},
             }
             worker = threading.Thread(**params)
             worker.start()
@@ -368,7 +361,7 @@ def multipart_upload_log(uploaded, total):
     worker_name = threading.currentThread().name
     log.Debug("%s: Uploaded %s/%s bytes" % (worker_name, uploaded, total))
 
-def multipart_upload_worker(mp, filename, offset, chunk_size, remaining=False):
+def multipart_upload_worker(mp, filename, offset, chunk_size):
     """
     Worker method for uploading a file chunk to S3 using multipart upload.
     Note that the file chunk is read into memory, so it's important to keep
@@ -380,10 +373,7 @@ def multipart_upload_worker(mp, filename, offset, chunk_size, remaining=False):
         fd = open(filename, 'rb')
         fd.seek(chunk_size * offset)
         try:
-            if not remaining:
-                chunk = StringIO(fd.read(chunk_size))
-            else:
-                chunk = StringIO(fd.read())
+            chunk = StringIO(fd.read(chunk_size))
             mp.upload_part_from_file(chunk, offset + 1, cb=multipart_upload_log)
         finally:
             chunk.close()
