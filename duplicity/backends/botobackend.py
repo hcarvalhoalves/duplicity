@@ -352,7 +352,8 @@ class BotoBackend(duplicity.backend.Backend):
                 'multipart_id': mp.id,
                 'filename': filename,
                 'offset': n,
-                'bytes': chunk_size
+                'bytes': chunk_size,
+                'num_retries': globals.num_retries,
             }
             pool.apply_async(multipart_upload_worker, kwds=params)
         pool.close()
@@ -364,33 +365,44 @@ class BotoBackend(duplicity.backend.Backend):
 
         return mp.complete_upload()
 
-def multipart_upload_log(uploaded, total):
-    worker_name = multiprocessing.current_process().name
-    log.Debug("%s: Uploaded %s/%s bytes" % (worker_name, uploaded, total))
 
-def multipart_upload_worker(scheme, url, bucket_name, multipart_id, filename, offset, bytes):
+def multipart_upload_worker(scheme, url, bucket_name, multipart_id, filename,
+                            offset, bytes, num_retries):
     """
     Worker method for uploading a file chunk to S3 using multipart upload.
     Note that the file chunk is read into memory, so it's important to keep
     this number reasonably small.
     """
-    worker_name = multiprocessing.current_process().name
-    log.Debug("%s: Uploading chunk %d" % (worker_name, offset + 1))
+    import traceback
     
-    try:
-        conn = get_connection(scheme, url)
-        bucket = conn.lookup(bucket_name)
+    def _upload_callback(uploaded, total):
+        worker_name = multiprocessing.current_process().name
+        log.Debug("%s: Uploaded %s/%s bytes" % (worker_name, uploaded, total))
     
-        for mp in bucket.get_all_multipart_uploads():
-            if mp.id == multipart_id:
-                with FileChunkIO(filename, 'r', offset=offset, bytes=bytes) as fd:
-                    mp.upload_part_from_file(fd, offset + 1, cb=multipart_upload_log)
-                break
-    except Exception, e:
-        log.Debug("%s: Upload of chunk %d failed" % (worker_name, offset + 1))
-        raise e
+    def _upload(num_retries):
+        worker_name = multiprocessing.current_process().name
+        log.Debug("%s: Uploading chunk %d" % (worker_name, offset + 1))
+        try:
+            conn = get_connection(scheme, url)
+            bucket = conn.lookup(bucket_name)
+    
+            for mp in bucket.get_all_multipart_uploads():
+                if mp.id == multipart_id:
+                    with FileChunkIO(filename, 'r', offset=offset, bytes=bytes) as fd:
+                        mp.upload_part_from_file(fd, offset + 1, cb=_upload_callback)
+                    break
+        except Exception, e:
+            traceback.print_exc()
+            if num_retries:
+                log.Debug("%s: Upload of chunk %d failed. Retrying %d more times..." % (
+                    worker_name, offset + 1, num_retries - 1))
+                return _upload(num_retries - 1)
+            log.Debug("%s: Upload of chunk %d failed. Aborting..." % (
+                worker_name, offset + 1))
+            raise e
+        log.Debug("%s: Upload of chunk %d complete" % (worker_name, offset + 1))
 
-    log.Debug("%s: Upload of chunk %d complete" % (worker_name, offset + 1))
+    return _upload(num_retries)
 
 duplicity.backend.register_backend("s3", BotoBackend)
 duplicity.backend.register_backend("s3+http", BotoBackend)
