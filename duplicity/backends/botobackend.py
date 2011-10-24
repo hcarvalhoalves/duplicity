@@ -2,6 +2,7 @@
 #
 # Copyright 2002 Ben Escoto <ben@emerose.org>
 # Copyright 2007 Kenneth Loafman <kenneth@loafman.com>
+# Copyright 2011 Henrique Carvalho Alves <hcarvalhoalves@gmail.com>
 #
 # This file is part of duplicity.
 #
@@ -23,14 +24,14 @@ import os
 import time
 import multiprocessing
 
-from filechunkio import FileChunkIO
-
 import duplicity.backend
+
 from duplicity import globals
 from duplicity import log
 from duplicity.errors import * #@UnusedWildImport
 from duplicity.util import exception_traceback
 from duplicity.backend import retry
+from duplicity.filechunkio import FileChunkIO
 
 
 def get_connection(scheme, url):
