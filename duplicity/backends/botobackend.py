@@ -21,8 +21,8 @@
 # Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
 
 import os
+import sys
 import time
-import multiprocessing
 
 import duplicity.backend
 
@@ -32,6 +32,13 @@ from duplicity.errors import * #@UnusedWildImport
 from duplicity.util import exception_traceback
 from duplicity.backend import retry
 from duplicity.filechunkio import FileChunkIO
+
+# Multiprocessing is not supported on *BSD
+if sys.platform not in ('darwin', 'linux2'):
+    from multiprocessing import dummy as multiprocessing
+    log.Debug('Multiprocessing is not supported on %s, will use threads instead.' % sys.platform)
+else:
+    import multiprocessing
 
 
 def get_connection(scheme, url):
