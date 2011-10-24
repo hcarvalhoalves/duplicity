@@ -388,7 +388,7 @@ def multipart_upload_worker(scheme, url, bucket_name, multipart_id, filename,
     
             for mp in bucket.get_all_multipart_uploads():
                 if mp.id == multipart_id:
-                    with FileChunkIO(filename, 'r', offset=offset, bytes=bytes) as fd:
+                    with FileChunkIO(filename, 'r', offset=offset * bytes, bytes=bytes) as fd:
                         mp.upload_part_from_file(fd, offset + 1, cb=_upload_callback)
                     break
         except Exception, e:
